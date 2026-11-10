@@ -23,6 +23,8 @@ ControlProperties = {
     { name = "fieldCompletion", min = 0.8, max = 0.985, step = 0.03, unit= "%", autoBind = true },
     -- basegame: HarvestMission.SUCCESS_FACTOR = 0.93
     { name = "toDeliver", min = 0.7, max = 0.945, step = 0.03, unit= "%", autoBind = true },
+    -- only used with FS25_precisionFarming: lower yields make harvest contracts hard to fulfill
+    { name = "pfYield", min = 0.7, max = 1.01, step = 0.05, unit= "%", autoBind = true },
     { name = "refreshMP", values = {"ui_admin","ui_farmManager","ui_players"}, autoBind = true },
     { name = "ferment", autoBind = true },
     { name = "forcePlow", autoBind = true },
@@ -51,6 +53,7 @@ ControlProperties = {
     { name = "genRoot", autoBind = true },  		-- potato, sugarbeet
     { name = "genVegetable", autoBind = true },  	-- parsnip, carrot
     { name = "genGreen", autoBind = true },  		-- peas, spinach, beans
+    { name = "genForage", autoBind = true },  		-- clover, alfalfa, grass (map fruits)
     { name = "genTree", autoBind = true }, 			-- tree transport
     { name = "genDead", autoBind = true },
     { name = "genRock", autoBind = true },

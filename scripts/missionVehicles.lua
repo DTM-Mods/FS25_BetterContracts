@@ -50,6 +50,8 @@ function BetterContracts.loadMissionVehicles(missionManager, superFunc, xmlFilen
 		self:checkExtraMissionVehicles(self.directory .. "missionVehicles/baseGame.xml",baseDir)
 		self:loadExtraMissionVehicles(self.directory.."missionVehicles/baseGame.xml", baseDir)
 		self.loadedVehicles = true
+		debugPrint("[BC] GREEN_FORAGE harvest vehicle groups loaded: %s",
+			tostring(self:hasHarvestVariant("GREEN_FORAGE")))
 
 		-- determine userdef location: modSettings/FS25_BetterContracts/<mapName>/ 
 		local map = g_currentMission.missionInfo.map
@@ -437,6 +439,19 @@ function BetterContracts:vehicleTag(m, vehicleIds)
 		} 
 	table.insert(self.tagMissions, m) -- we need to tag vecs for this mission
 end
+function fixVehicleGroup(m)
+	-- a saved, not yet started mission may have a vehicle group that is no longer valid
+	-- (e.g. clover harvest saved with GRAIN vehicles). Pick a valid one instead
+	if m.status ~= MissionStatus.CREATED or m.groups == nil or #m.groups == 0 then return end
+	for _, g in ipairs(m.groups) do
+		if g.identifier == m.vehicleGroupIdentifier then return end
+	end
+	local g = table.getRandomElement(m.groups)
+	debugPrint("* %s: vehicle group %s invalid, replaced by %s", m:getTitle(),
+		m.vehicleGroupIdentifier, g.identifier)
+	m.vehiclesToLoad = g.vehicles
+	m.vehicleGroupIdentifier = g.identifier
+end
 function missionManagerLoadFromXMLFile(self,xmlFilename)
 	-- appended to MissionManager:loadFromXMLFile()
 	-- MP only: 
@@ -444,10 +459,12 @@ function missionManagerLoadFromXMLFile(self,xmlFilename)
 		"BetterContracts.missionManagerLoadFromXMLFile should run on Server only")
 	local isMP = g_currentMission.missionDynamicInfo.isMultiplayer
 	debugPrint("* missionManagerLoadFromXMLFile, MP %s", isMP)
+	debugPrint("[BC] missionManagerLoadFromXMLFile: %d missions", #self.missions)
 
 	for _, m in ipairs(self.missions) do
 		-- append possible vehicle groups to mission
 		m.groups = getGroups(m)
+		fixVehicleGroup(m)
 
 		-- we inform clients about active missions with leased vecs
 		if m.activeMissionId ~= nil and m.spawnedVehicles then 
@@ -595,11 +612,26 @@ function(self, superf, connection)
 	end
 end)
 
+function BetterContracts:ensureOwnVehicles()
+	-- other mods (e.g. FS25_Contracts_Plus) reset g_missionManager.missionVehicles after
+	-- we loaded ours. Re-add our baseGame.xml groups once, if they are gone
+	if self.ownVecsChecked or self.overwrittenVehicles then return end
+	self.ownVecsChecked = true
+	if self:hasHarvestVariant("GREEN_FORAGE") then return end
+	Logging.info("[BC] mission vehicle groups were reset by another mod, re-adding BetterContracts groups")
+	self:loadExtraMissionVehicles(self.directory.."missionVehicles/baseGame.xml", self.directory)
+end
 function getGroups(m)
 	-- get all possible vehicle groups for mission m
+	BetterContracts:ensureOwnVehicles()
 	local typeName = m:getMissionTypeName()
 	local size = m:getVehicleSize()
 	local variant = m:getVehicleVariant()
+	if typeName == "harvestMission" and BetterContracts:isGrassLike(m.fruitTypeIndex)
+		and BetterContracts:hasHarvestVariant("GREEN_FORAGE") then
+		-- clover etc: don't rely on basegame variant (would be GRAIN = combine)
+		variant = "GREEN_FORAGE"
+	end
 	local typeGroups = g_missionManager.missionVehicles[typeName]
 	debugPrint("* getGroups: %s %s %s",typeName,size,variant)
 	local groups = {}
@@ -677,6 +709,13 @@ function VehicleSelect:init(m)
 			self.vehiclesList:setSelectedItem(1, i)
 			self.originalGroup = i
 		end
+	end
+	if self.originalGroup == 0 and #self.groups > 0 then
+		-- mission's group is not in current list (e.g. vehicle definitions changed): don't crash
+		Logging.warning("[BetterContracts] %s: vehicle group %s not found, using first group",
+			m:getTitle(), m.vehicleGroupIdentifier)
+		self.vehiclesList:setSelectedItem(1, 1)
+		self.originalGroup = 1
 	end
 	assert(self.originalGroup > 0,
 		"BetterContracts: Non-matching vehicle groups.")

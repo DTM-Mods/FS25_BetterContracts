@@ -162,6 +162,7 @@ function checkOtherMods(self)
 		FS25_KommunalServices = "kommunal",
 		FS25_extendedMissionInfo = "extendedInfo",
 		FS25_ActiveMissionsTime = "activeMissionsTime",
+		FS25_Contracts_Plus = "contractsPlus",
 		}
 	for mod, switch in pairs(mods) do
 		if g_modIsLoaded[mod] then
@@ -192,6 +193,7 @@ function registerXML(self)
 	self.xmlSchema:register(XMLValueType.FLOAT, self.baseXmlKey.."#lease")
 	self.xmlSchema:register(XMLValueType.FLOAT, self.baseXmlKey.."#deliver")
 	self.xmlSchema:register(XMLValueType.FLOAT, self.baseXmlKey.."#deliverBale")
+	self.xmlSchema:register(XMLValueType.FLOAT, self.baseXmlKey.."#pfYield")
 	self.xmlSchema:register(XMLValueType.FLOAT, self.baseXmlKey.."#fieldCompletion")
 
 	local key = self.baseXmlKey..".lazyNPC"
@@ -216,6 +218,7 @@ function registerXML(self)
 	self.xmlSchema:register(XMLValueType.BOOL, key.."#genGrain")
 	self.xmlSchema:register(XMLValueType.BOOL, key.."#genSingle")
 	self.xmlSchema:register(XMLValueType.BOOL, key.."#genGreen")
+	self.xmlSchema:register(XMLValueType.BOOL, key.."#genForage")
 	self.xmlSchema:register(XMLValueType.BOOL, key.."#genVegetable")
 	self.xmlSchema:register(XMLValueType.BOOL, key.."#genRoot")
 	self.xmlSchema:register(XMLValueType.BOOL, key.."#genTree")
@@ -246,6 +249,7 @@ function readconfig(self)
 		self.config.leaseMultiplier = xmlFile:getValue(key.."#lease", 1.)
 		self.config.toDeliver = xmlFile:getValue(key.."#deliver", 0.94)
 		self.config.toDeliverBale = xmlFile:getValue(key.."#deliverBale", 0.90)
+		self.config.pfYield = xmlFile:getValue(key.."#pfYield", 1.0)
 		self.config.fieldCompletion = xmlFile:getValue(key.."#fieldCompletion", 0.95)
 		self.config.refreshMP =	xmlFile:getValue(key.."#refreshMP", 2)		
 		self.config.lazyNPC = 	xmlFile:getValue(key.."#lazyNPC", false)
@@ -278,6 +282,7 @@ function readconfig(self)
 		self.config.genRoot = xmlFile:getValue(key.."#genRoot", true)
 		self.config.genVegetable = xmlFile:getValue(key.."#genVegetable", true)
 		self.config.genGreen = xmlFile:getValue(key.."#genGreen", true)
+		self.config.genForage = xmlFile:getValue(key.."#genForage", true)
 		self.config.genTree = xmlFile:getValue(key.."#genTree", true)
 		self.config.genDead = xmlFile:getValue(key.."#genDead", true)
 		self.config.genRock = xmlFile:getValue(key.."#genRock", true)
@@ -334,6 +339,11 @@ function hookFunctions(self)
 	Utility.prependedFunction(ItemSystem, "save", saveSavegame)
 	-- to allow MOWER / SWATHER on harvest missions:
 	Utility.overwrittenFunction(HarvestMission, "new", harvestMissionNew)
+	Utility.overwrittenFunction(HarvestMission, "getVehicleVariant", harvestVehicleVariant)
+	-- credit windrow deliveries (clover, grass..) to forage harvest missions:
+	if SellingStation.addFillLevelFromTool ~= nil then
+		Utility.overwrittenFunction(SellingStation, "addFillLevelFromTool", sellingStationAddFillLevel)
+	end
 
 	-- to count and save/load # of jobs per farm per NPC
 	Utility.appendedFunction(AbstractMission,"finish",finish)
@@ -469,6 +479,7 @@ function BetterContracts:initialize()
 		leaseMultiplier = 1.,		-- general lease cost multiplier
 		toDeliver = 0.94,			-- HarvestMission.SUCCESS_FACTOR
 		toDeliverBale = 0.90,		-- BaleMission.FILL_SUCCESS_FACTOR
+		pfYield = 1.0,				-- harvest amount to deliver, if PrecisionFarming is active
 		fieldCompletion = 0.95,		-- AbstractMission.SUCCESS_FACTOR
 		fieldSize = 0.5,			-- threshold from "small" to "med" size field
 		generationInterval = 1, 	-- MissionManager.MISSION_GENERATION_INTERVAL
@@ -477,6 +488,7 @@ function BetterContracts:initialize()
 			genRoot = true,  		-- 
 			genVegetable = true,  	-- 
 			genGreen = true,  		-- 
+			genForage = true,  		-- clover, alfalfa, grass harvest (map fruits)
 			genTree = true,  		-- 
 			genDead = true,  		-- 
 			genRock = true,  		-- 
@@ -540,6 +552,56 @@ function BetterContracts:initialize()
 	hookFunctions(self) 		-- appends / overwrites to basegame functions
 	addTexts(self)  			-- raise i18n texts to global
 end
+BetterContracts.GRASS_LIKE = {GRASS=true, MEADOW=true, CLOVER=true, ALFALFA=true, FIELDGRASS=true}
+BetterContracts.GRASS_WINDROWS = {GRASS_WINDROW=true, CLOVER_WINDROW=true, ALFALFA_WINDROW=true}
+function BetterContracts:getWindrowFillType(fruitTypeIndex)
+	-- return windrow filltype index for fruit, or nil
+	local ftm = g_fruitTypeManager
+	if fruitTypeIndex == nil then return nil end
+	if ftm.getWindrowFillTypeIndexByFruitTypeIndex ~= nil then
+		return ftm:getWindrowFillTypeIndexByFruitTypeIndex(fruitTypeIndex)
+	elseif ftm.fruitTypeIndexToWindrowFillTypeIndex ~= nil then
+		return ftm.fruitTypeIndexToWindrowFillTypeIndex[fruitTypeIndex]
+	end
+	local fruitType = ftm:getFruitTypeByIndex(fruitTypeIndex)
+	return fruitType and fruitType.windrowName and g_fillTypeManager:getFillTypeIndexByName(fruitType.windrowName)
+end
+function BetterContracts:getForageMission(station, farmId, fillTypeIndex)
+	-- return running forage harvest mission of farmId, that sells to station and
+	-- whose fruit windrow is fillTypeIndex (but mission counts a different filltype)
+	for _, m in ipairs(g_missionManager.missions) do
+		if m.status == MissionStatus.RUNNING and m.farmId == farmId and m.sellingStation == station
+			and m.type ~= nil and m.type.name == "harvestMission"
+			and m.fillTypeIndex ~= nil and m.fillTypeIndex ~= fillTypeIndex
+			and self:isGrassLike(m.fruitTypeIndex)
+			and self:getWindrowFillType(m.fruitTypeIndex) == fillTypeIndex then
+			return m
+		end
+	end
+	return nil
+end
+function sellingStationAddFillLevel(self, superf, farmId, deltaFillLevel, fillTypeIndex, ...)
+	-- overwrites SellingStation:addFillLevelFromTool()
+	-- forage harvest (clover, grass..): mowers / forage harvesters deliver the windrow filltype,
+	-- but the mission only counts the fruit filltype. Book windrow as mission filltype
+	local m = BetterContracts:getForageMission(self, farmId, fillTypeIndex)
+	if m ~= nil and (self.acceptedFillTypes == nil or self.acceptedFillTypes[m.fillTypeIndex]) then
+		fillTypeIndex = m.fillTypeIndex
+	end
+	return superf(self, farmId, deltaFillLevel, fillTypeIndex, ...)
+end
+function BetterContracts:isGrassLike(fruitTypeIndex)
+	-- true if fruit is mowed to a grass-type windrow (e.g. clover on map mods)
+	local fruitType = g_fruitTypeManager:getFruitTypeByIndex(fruitTypeIndex)
+	if fruitType == nil then return false end
+	if BetterContracts.GRASS_LIKE[fruitType.name] then return true end
+
+	local windrowIndex = self:getWindrowFillType(fruitTypeIndex)
+	local windrowName = windrowIndex ~= nil and g_fillTypeManager:getFillTypeNameByIndex(windrowIndex)
+		or fruitType.windrowName
+	-- can't just test for "*_WINDROW": hemp / linseed have those too, but are combined
+	return windrowName ~= nil and BetterContracts.GRASS_WINDROWS[windrowName:upper()] == true
+end
 function BetterContracts:allowHarvest()
 	-- check if fruit on current field is exluded from harvest contracts
 	local variantToType = {
@@ -554,6 +616,7 @@ function BetterContracts:allowHarvest()
 		VEGETABLES ="VEGETABLES",
 		GRAIN = "GRAIN",
 		ONION = "VEGETABLES",
+		GREEN_FORAGE = "FORAGE",
 	}
 	local field = g_fieldManager:getFieldForMission()
 	if field == nil then 
@@ -563,6 +626,7 @@ function BetterContracts:allowHarvest()
 	local fruitTypeIndex = field:getFieldState().fruitTypeIndex
 	local variant = HarvestMission.getVehicleVariant({fruitTypeIndex= fruitTypeIndex})
 	local type = variantToType[variant]
+	if self:isGrassLike(fruitTypeIndex) then type = "FORAGE" end
 	return self.canHarvest[type]  or false
 end
 function startGeneration(self)
@@ -604,6 +668,18 @@ function onSavegameLoaded(self)
 	-- appended to HarvestMission:onSavegameLoaded()
 	-- add selling station fruit price to harvest mission. Really needed?
 	self.info.price = BetterContracts:getFilltypePrice(self)
+
+	-- saved grass-like harvest (e.g. clover) may still have GRAIN vehicles: re-select group
+	local bc = BetterContracts
+	if bc:isGrassLike(self.fruitTypeIndex) then
+		self.groups = getGroups(self)
+		local before = self.vehicleGroupIdentifier
+		fixVehicleGroup(self)
+		local ft = g_fruitTypeManager:getFruitTypeByIndex(self.fruitTypeIndex)
+		debugPrint("[BC] grass harvest %s on field %s: status %s, basegame variant %s, used variant %s, groups %d, vehicle group %s -> %s",
+			ft and ft.name, self.field and self.field:getName(), self.status, self:getVehicleVariant(),
+			self.groups[1] and self.groups[1].variant, #self.groups, before, self.vehicleGroupIdentifier)
+	end
 end
 function BetterContracts:getFilltypePrice(m)
 	-- get price for harvest/ mow-bale missions
@@ -632,9 +708,18 @@ function BetterContracts:getFilltypePrice(m)
 		self.ft[fillType] and self.ft[fillType].title or "unknown")
 	return 0
 end
+function BetterContracts:getExpectedLiters(m)
+	-- harvest amount for mission m. Reduced by setting pfYield if PrecisionFarming is active,
+	-- because its (realistic) yields often don't reach the basegame expected amount
+	local liters = m.expectedLiters or 0
+	if g_modIsLoaded.FS25_precisionFarming and m.type ~= nil and m.type.name == "harvestMission" then
+		liters = liters * (self.config.pfYield or 1)
+	end
+	return liters
+end
 function BetterContracts:calcProfit(m, successFactor)
 	-- calculate addtl income as value of kept harvest
-	local keep = math.floor(m.expectedLiters *(1 - successFactor))
+	local keep = math.floor(self:getExpectedLiters(m) *(1 - successFactor))
 	local price = self:getFilltypePrice(m)
 	return keep, price, keep * price
 end
@@ -674,7 +759,8 @@ function addMission(self, mission)
 		if table.hasElement(SC.DELIVERMISSION, typeName) then
 			if mission.expectedLiters == nil then
 				Logging.warning("[%s]:addMission(): contract '%s %s on field %s' has no expectedLiters.", 
-					bc.name, mission.type.name, bc.ft[mission.fillType].title, mission.field:getName())
+					bc.name, mission.type.name, bc.ft[mission.fillTypeIndex] and bc.ft[mission.fillTypeIndex].title,
+					mission.field:getName())
 				mission.expectedLiters = 0 
 			end 
 			if mission.expectedLiters == 0 then  
@@ -689,7 +775,7 @@ function addMission(self, mission)
 				factor = bc.baleCollectMission.data.ownTable.SUCCESS_FACTOR
 			end
 			info.keep, info.price, info.profit = bc:calcProfit(mission, factor)
-			info.deliver = math.ceil(mission.expectedLiters - info.keep) 	--must be delivered
+			info.deliver = math.ceil(bc:getExpectedLiters(mission) - info.keep) 	--must be delivered
 		end  	
 		info.perMin = (mission:getReward() + info.profit) /info.worktime *60
 
@@ -793,7 +879,8 @@ function harvestGetDetails(self, superf)
 	end
 	-- add our values to show in contract details list
 	local price = BetterContracts:getFilltypePrice(self)
-	local deliver = self.expectedLiters - self.info.keep
+	local expected = BetterContracts:getExpectedLiters(self)
+	local deliver = expected - self.info.keep
 	local eta = {}
 
 	if self.status == MissionStatus.RUNNING then
@@ -801,7 +888,7 @@ function harvestGetDetails(self, superf)
 		if self.depositedLiters then depo = self.depositedLiters end
 		depo = MathUtil.round(depo / 100) * 100
 		-- don't show negative togos:
-		local togo = math.max(MathUtil.round((self.expectedLiters -self.info.keep -depo)/100)*100, 0)
+		local togo = math.max(MathUtil.round((expected -self.info.keep -depo)/100)*100, 0)
 		eta = {
 			["title"] = g_i18n:getText("SC_delivered"),
 			["value"] = g_i18n:formatVolume(depo)
@@ -971,6 +1058,7 @@ function BetterContracts:onPostLoadMap(mapNode, mapFile)
 		ROOTCROP = true,
 		VEGETABLES = true,
 		GREEN = true,
+		FORAGE = true,
 	}  		
 	-- adjust max missions
 	local fieldsAmount = table.size(g_fieldManager.fields)
@@ -1052,6 +1140,43 @@ function BetterContracts:onStartMission()
 	end
 	self:updateGeneration() 		-- upd contract exclusions
 	self:validateMissionVehicles()	-- check mission vehicles
+	self:reportMapCrops()			-- log harvest vehicles for map/mod fruits
+
+	-- FS25_Contracts_Plus resets mission vehicles and raises generation limits (freezes on refresh)
+	if self.contractsPlus then
+		local text = g_i18n:getText("bc_conflictContractsPlus")
+		Logging.warning("[%s] %s", self.name, text)
+		if g_currentMission.addIngameNotification ~= nil then
+			g_currentMission:addIngameNotification(FSBaseMission.INGAME_NOTIFICATION_CRITICAL, text)
+		end
+		MissionManager.MAX_MISSIONS_PER_GENERATION = 4 		-- basegame values
+		MissionManager.MAX_TRIES_PER_GENERATION = 5
+		self:ensureOwnVehicles()
+	end
+end
+BetterContracts.BASE_FRUITS = {WHEAT=1, BARLEY=1, OAT=1, CANOLA=1, SORGHUM=1, SUNFLOWER=1, SOYBEAN=1,
+	MAIZE=1, POTATO=1, SUGARBEET=1, COTTON=1, SUGARCANE=1, POPLAR=1, GRASS=1, MEADOW=1, OILSEEDRADISH=1,
+	RICE=1, RICELONGGRAIN=1, SPINACH=1, PEA=1, GREENBEAN=1, CARROT=1, PARSNIP=1, BEETROOT=1, GRAPE=1, OLIVE=1,
+	ONION=1}
+function BetterContracts:reportMapCrops()
+	-- log which harvest vehicles map/mod fruits will get, so missing vehicle sets can be added
+	local lines = {}
+	for _, fruitType in ipairs(g_fruitTypeManager:getFruitTypes()) do
+		if not BetterContracts.BASE_FRUITS[fruitType.name] then
+			local variant
+			if self:isGrassLike(fruitType.index) then
+				variant = "GREEN_FORAGE (mow / forage harvester)"
+			else
+				variant = HarvestMission.getVehicleVariant({fruitTypeIndex = fruitType.index}) or "none"
+				if variant == "GRAIN" then variant = "GRAIN (combine) - check if correct" end
+			end
+			table.insert(lines, string.format("  %-16s -> %s", fruitType.name, variant))
+		end
+	end
+	if #lines > 0 then
+		Logging.info("[%s] map/mod crops and their harvest contract vehicles:\n%s",
+			self.name, table.concat(lines, "\n"))
+	end
 end
 function BetterContracts:onWriteStream(streamId)
 	-- write settings to a client when it joins
@@ -1113,7 +1238,8 @@ function BetterContracts:updateGeneration()
 	self.canHarvest.GRAIN = self.config.genGrain
 	self.canHarvest.GREEN = self.config.genGreen
 	self.canHarvest.VEGETABLES = self.config.genVegetable
-	self.canHarvest.ROOT = self.config.genRoot
+	self.canHarvest.ROOTCROP = self.config.genRoot
+	self.canHarvest.FORAGE = self.config.genForage
 end
 function saveSavegame()
 	-- save our settings
@@ -1156,6 +1282,7 @@ function saveSavegame()
 	xmlFile:setFloat( key.."#lease", 		  conf.leaseMultiplier)
 	xmlFile:setFloat( key.."#deliver", 		  conf.toDeliver)
 	xmlFile:setFloat( key.."#deliverBale", 	  conf.toDeliverBale)
+	xmlFile:setFloat( key.."#pfYield", 		  conf.pfYield)
 	xmlFile:setFloat( key.."#fieldCompletion",conf.fieldCompletion)
 	xmlFile:setInt  ( key.."#refreshMP",	  conf.refreshMP)
 	xmlFile:setBool ( key.."#lazyNPC", 		  conf.lazyNPC)
@@ -1187,6 +1314,7 @@ function saveSavegame()
 		xmlFile:setBool (key.."#genGrain", 		conf.genGrain)
 		xmlFile:setBool (key.."#genRoot", 		conf.genRoot)
 		xmlFile:setBool (key.."#genGreen", 		conf.genGreen)
+		xmlFile:setBool (key.."#genForage", 	conf.genForage)
 		xmlFile:setBool (key.."#genVegetable", 	conf.genVegetable)
 		xmlFile:setBool (key.."#genTree", 		conf.genTree)
 		xmlFile:setBool (key.."#genDead", 		conf.genDead)
@@ -1256,6 +1384,24 @@ function hasFarmReachedMissionLimit(self,superf,farmId)
 
 	MissionManager.MAX_MISSIONS_PER_FARM = maxActive
 	return superf(self, farmId) -- std: true if #active missions >= 3
+end
+function harvestVehicleVariant(self, superf)
+	-- overwrites HarvestMission.getVehicleVariant(): basegame gives GRAIN vehicles (combine)
+	-- to map fruits like clover, that must be mowed / forage harvested
+	if BetterContracts:isGrassLike(self.fruitTypeIndex) and BetterContracts:hasHarvestVariant("GREEN_FORAGE") then
+		return "GREEN_FORAGE"
+	end
+	return superf(self)
+end
+function BetterContracts:hasHarvestVariant(variant)
+	-- true if any harvestMission vehicle group of this variant is loaded
+	local typeVecs = g_missionManager.missionVehicles.harvestMission
+	for _, groups in pairs(typeVecs or {}) do
+		for _, group in ipairs(groups) do
+			if group.variant == variant then return true end
+		end
+	end
+	return false
 end
 function harvestMissionNew(isServer, superf, isClient, customMt )
 	-- allow mower/ swather to harvest swaths
