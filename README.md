@@ -10,6 +10,12 @@ For a detailed decription, please see the [FS22 version](https://github.com/Mmtr
 
 This is the DTM Mods fork. The original mod is by Mmtrx: [Mmtrx/FS25_BetterContracts](https://github.com/Mmtrx/FS25_BetterContracts).
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/DTM-Mods/.github/main/assets/license.jpg" alt="License" width="100%">
+</p>
+
+GPL-3.0, the licence of the original Better Contracts by Mmtrx; see [LICENSE](LICENSE).
+
 ---
 
 <p align="center">
