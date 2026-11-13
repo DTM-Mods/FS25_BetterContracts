@@ -1,0 +1,12 @@
+{
+  "2.jpg": {
+    "title": "A better contracts page",
+    "text": "Sort the contracts, clear old ones or ask for new ones, right on the contracts page.",
+    "at": "bottom"
+  },
+  "3.jpg": {
+    "title": "Off with one key",
+    "text": "D switches Better Contracts off and back on; here the game's own list.",
+    "at": "bottom"
+  }
+}
