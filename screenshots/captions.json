@@ -8,5 +8,15 @@
     "title": "Off with one key",
     "text": "D switches Better Contracts off and back on; here the game's own list.",
     "at": "bottom"
+  },
+  "4.jpg": {
+    "title": "Your own contract rules",
+    "text": "Set rewards, lease cost, how many contracts run at once and when fieldwork counts as complete.",
+    "at": "bottom"
+  },
+  "5.jpg": {
+    "title": "Choose which contracts appear",
+    "text": "Switch contract types on or off: grain, root crops, vegetables, forage, deadwood and more.",
+    "at": "bottom"
   }
 }
