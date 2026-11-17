@@ -27,6 +27,8 @@ jobs:
     with:
       test-tag: ${{ inputs.test-tag || '' }}
       # Settings for this mod (all optional, see DTM-Mods/.github ci/README.md):
+      modhub: false                  # a fork (Mmtrx's mod); the GIANTS ModHub rules don't apply
+      auto-release: false            # releases stay by hand (upstream merges change the version)
       # zip-name: FS25_Name          # the mod's real zip name, when it differs from the repository name
       # max-files: 0                 # no GIANTS ModHub 128-file limit (big mods that never go to ModHub)
       # test-command: python tests/run_all.py
